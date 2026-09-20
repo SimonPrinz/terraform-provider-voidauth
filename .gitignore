@@ -1,0 +1,11 @@
+.DS_Store
+.idea/
+
+/terraform-provider-voidauth
+.terraform/
+.terraform.lock.hcl
+*.tfvars
+*.tfstate
+*.tfstate.backup
+*.tfstate.*.backup
+dev.tfrc

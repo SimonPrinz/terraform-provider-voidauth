@@ -1,0 +1,17 @@
+volumes:
+  db:
+  config:
+
+services:
+  voidauth:
+    image: voidauth/voidauth:1.15.2
+    restart: unless-stopped
+    volumes:
+      - db:/app/db
+      - config:/app/config
+    ports:
+      - "3000:3000"
+    environment:
+      APP_URL: http://localhost:3000
+      STORAGE_KEY: b3149dc71c69c729cf8b1d6e782ed803
+      DB_ADAPTER: sqlite

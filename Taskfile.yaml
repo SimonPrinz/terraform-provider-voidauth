@@ -1,0 +1,25 @@
+version: '3'
+
+tasks:
+  default:
+    cmds:
+      - task: fmt
+      - task: vet
+      - task: build
+      - task: docs
+  build:
+    cmd: go build -v
+  vet:
+    cmd: go vet
+  fmt:
+    cmd: go fmt
+  docs:
+    cmd: tfplugindocs
+  plan:
+    cmds:
+      - task: build
+      - TF_CLI_CONFIG_FILE=$(pwd)/dev.tfrc terraform plan
+  apply:
+    cmds:
+      - task: build
+      - TF_CLI_CONFIG_FILE=$(pwd)/dev.tfrc terraform apply
