@@ -5,7 +5,7 @@ before:
 builds:
   - env:
       - CGO_ENABLED=0
-    mod_timestamp: '{{ .CommitTimestam }}'
+    mod_timestamp: '{{ .CommitTimestamp }}'
     flags:
       - -trimpath
     ldflags:
