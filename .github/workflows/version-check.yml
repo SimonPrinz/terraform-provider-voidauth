@@ -1,0 +1,144 @@
+name: Version Check
+
+on:
+  schedule:
+    - cron: "0 2 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: version-check
+  cancel-in-progress: false
+
+jobs:
+  check:
+    name: Check for a newer voidauth release
+    runs-on: ubuntu-latest
+    env:
+      UPSTREAM_REPO: voidauth/voidauth
+      ISSUE_TITLE_PREFIX: "Update to voidauth v"
+    steps:
+      - name: Create GitHub App token
+        id: app-token
+        uses: actions/create-github-app-token@v3
+        with:
+          client-id: ${{ vars.APP_CLIENT_ID }}
+          private-key: ${{ secrets.APP_PRIVATE_KEY }}
+          permission-issues: write
+
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Compare versions
+        id: compare
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+        run: |
+          set -euo pipefail
+
+          # Version the provider currently targets (pinned in docker-compose.yaml).
+          local_version="$(grep -oE 'voidauth/voidauth:[0-9]+(\.[0-9]+)*' docker-compose.yaml | head -n1 | sed 's/.*://' || true)"
+          local_version="${local_version#v}"
+
+          # Latest stable upstream release (drafts and prereleases are excluded by the endpoint).
+          release_json="$(gh api "repos/${UPSTREAM_REPO}/releases/latest")"
+          remote_version="$(jq -r '.tag_name' <<<"$release_json")"
+          remote_version="${remote_version#v}"
+          release_url="$(jq -r '.html_url' <<<"$release_json")"
+          jq -r '.body // ""' <<<"$release_json" > "$RUNNER_TEMP/release-body.md"
+
+          if [ -z "$local_version" ] || [ -z "$remote_version" ]; then
+            echo "::error::Could not determine the local ($local_version) or remote ($remote_version) version."
+            exit 1
+          fi
+
+          # Only a strictly newer version counts as an update.
+          newer=false
+          if [ "$local_version" != "$remote_version" ] && \
+             [ "$(printf '%s\n%s\n' "$local_version" "$remote_version" | sort -V | tail -n1)" = "$remote_version" ]; then
+            newer=true
+          fi
+
+          {
+            echo "local_version=$local_version"
+            echo "remote_version=$remote_version"
+            echo "release_url=$release_url"
+            echo "update_needed=$newer"
+          } >> "$GITHUB_OUTPUT"
+
+          echo "Tracked: ${local_version} | Latest: ${remote_version} | update_needed=${newer}"
+
+      - name: Create or update issue
+        if: steps.compare.outputs.update_needed == 'true'
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          LOCAL_VERSION: ${{ steps.compare.outputs.local_version }}
+          REMOTE_VERSION: ${{ steps.compare.outputs.remote_version }}
+          RELEASE_URL: ${{ steps.compare.outputs.release_url }}
+        run: |
+          set -euo pipefail
+
+          body="$RUNNER_TEMP/issue-body.md"
+          {
+            echo "A newer voidauth release is available. This issue is managed automatically."
+            echo
+            echo "| | Version |"
+            echo "| --- | --- |"
+            echo "| Tracked (\`docker-compose.yaml\`) | ${LOCAL_VERSION} |"
+            echo "| Latest upstream | ${REMOTE_VERSION} |"
+            echo
+            echo "Release: ${RELEASE_URL}"
+            echo
+            echo "## Checklist"
+            echo
+            echo "- [ ] Bump \`docker-compose.yaml\` to \`voidauth/voidauth:${REMOTE_VERSION}\`"
+            echo "- [ ] Review upstream API changes against \`internal/client/\` (public, user, admin, group, proxyauth, claims)"
+            echo "- [ ] Update resources/data sources and regenerate \`docs/\` if the API changed"
+            echo "- [ ] Run \`task build\` and \`task plan\` against the new container"
+            echo "- [ ] Merge and let release-please cut the provider release"
+            echo
+            echo "<details><summary>Upstream release notes</summary>"
+            echo
+            if [ "$(wc -c < "$RUNNER_TEMP/release-body.md")" -gt 4000 ]; then
+              head -c 4000 "$RUNNER_TEMP/release-body.md"
+              echo
+              echo
+              echo "_Release notes truncated. See ${RELEASE_URL} for the full changelog._"
+            else
+              cat "$RUNNER_TEMP/release-body.md"
+            fi
+            echo
+            echo "</details>"
+          } > "$body"
+
+          # Keep a single rolling issue: reuse the open one if it exists.
+          existing="$(gh issue list --state open --limit 100 --json number,title \
+            | jq -r --arg prefix "$ISSUE_TITLE_PREFIX" '[.[] | select(.title | startswith($prefix))][0].number // empty')"
+
+          title="${ISSUE_TITLE_PREFIX}${REMOTE_VERSION}"
+
+          if [ -n "$existing" ]; then
+            gh issue edit "$existing" --title "$title" --body-file "$body"
+            echo "Updated issue #${existing}: ${title}"
+          else
+            gh issue create --title "$title" --body-file "$body"
+            echo "Created issue: ${title}"
+          fi
+
+      - name: Close stale issue
+        if: steps.compare.outputs.update_needed != 'true'
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          LOCAL_VERSION: ${{ steps.compare.outputs.local_version }}
+        run: |
+          set -euo pipefail
+
+          numbers="$(gh issue list --state open --limit 100 --json number,title \
+            | jq -r --arg prefix "$ISSUE_TITLE_PREFIX" '.[] | select(.title | startswith($prefix)) | .number')"
+
+          for number in $numbers; do
+            gh issue close "$number" \
+              --comment "Closing: the provider already tracks voidauth v${LOCAL_VERSION}, which is up to date with upstream."
+          done
